@@ -1,0 +1,11 @@
+.env
+data/raw/
+data/processed/
+outputs/
+.cache/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.idea/
+.vscode/
