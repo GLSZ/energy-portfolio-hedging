@@ -170,3 +170,8 @@ APIS = {
     # À stocker dans .env : EIA_API_KEY=ta_clé_ici
     "eia_base_url"  : "https://api.eia.gov/v2/",
 }
+
+EIA_SERIES = {
+    "WTI"   : "PET.RWTC.D",     # prix WTI quotidien (USD/baril)
+    "BRENT" : "PET.RBRTE.D",    # prix Brent quotidien (USD/baril)
+}
