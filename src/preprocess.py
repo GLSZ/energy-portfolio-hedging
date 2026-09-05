@@ -48,7 +48,29 @@ def load_prices(data_dir: str = None) -> pd.DataFrame:
       - Lève une FileNotFoundError explicite si le fichier est absent
         avec un message indiquant de lancer fetch_data.py d'abord
     """
-    pass
+
+    data_dir = data_dir or PATHS["raw"]
+    filepath = os.path.join(data_dir, f"prices_{START_DATE}_{END_DATE}.csv")
+
+    if not os.path.exists(filepath):
+        raise FileNotFoundError(
+            f"Fichier introuvable : {filepath}\n"
+            "Lance d'abord : python src/fetch_data.py"
+        )
+
+    df = pd.read_csv(filepath, index_col = 0, parse_dates = True)
+
+    # Nettoyage du MultiIndex de colonnes que yfinance peut générer
+    # yfinance retourne parfois des colonnes sous forme de tuples ("Close", "ENGI.PA")
+    # → on aplatit pour n'avoir que le nom du ticker
+
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(-1)
+
+    print(f"[LOAD] Prix — {len(df)} jours × {len(df.columns)} tickers")
+    print(f"       Période : {df.index[0].date()} → {df.index[-1].date()}")
+
+    return df
 
 
 def load_risk_free(data_dir: str = None) -> pd.Series:
@@ -61,7 +83,23 @@ def load_risk_free(data_dir: str = None) -> pd.Series:
       - Retourne une pd.Series (pas un DataFrame)
       - L'index doit être en datetime
     """
-    pass
+
+    data_dir = data_dir or PATHS["raw"]
+    filepath = os.path.join(data_dir, f"risk_free_{START_DATE}_{END_DATE}.csv")
+
+    if not os.path.exists(filepath):
+        raise FileNotFoundError(
+            f"Fichier introuvable : {filepath}\n"
+            "Lance d'abord : python src/fetch_data.py"
+        )
+
+    df = pd.read_csv(filepath, index_col = 0, parse_dates=True)
+    series = df.iloc[:, 0]   # première (et seule) colonne → Series
+    series.name = "risk_free"
+
+    print(f"[LOAD] Taux sans risque — {len(series)} observations")
+
+    return series
 
 
 def load_eia(data_dir: str = None) -> pd.DataFrame:
@@ -72,7 +110,20 @@ def load_eia(data_dir: str = None) -> pd.DataFrame:
       - Pattern : f"eia_{START_DATE}_{END_DATE}.csv"
       - Même logique que load_prices
     """
-    pass
+    data_dir = data_dir or PATHS["raw"]
+    filepath = os.path.join(data_dir, f"eia_{START_DATE}_{END_DATE}.csv")
+
+    if not os.path.exists(filepath):
+        raise FileNotFoundError(
+            f"Fichier introuvable : {filepath}\n"
+            "Lance d'abord : python src/fetch_data.py"
+        )
+
+    df = pd.read_csv(filepath, index_col=0, parse_dates=True)
+
+    print(f"[LOAD] EIA — {len(df)} observations × {len(df.columns)} séries")
+
+    return df
 
 
 # ─────────────────────────────────────────────
@@ -107,7 +158,36 @@ def align_trading_calendar(
       - Affiche le nombre de jours dans l'index commun
       - Retourne (prices, risk_free, eia) alignés
     """
-    pass
+
+    trading_index = prices.index
+
+    # Réindexe le taux sans risque sur l'index de trading
+    # ffill(limit=5) : on propage max 5 jours (une semaine de trading)
+    # pour ne pas propager trop loin si une série s'arrête
+
+    risk_free_aligned = (
+        risk_free
+        .reindex(trading_index)
+        .ffill(limit = 5)
+    )
+
+    # Même logique pour EIA
+    eia_aligned = (
+        eia
+        .reindex(trading_index)
+        .ffill(limit=5)
+    )
+
+    n_rf_nan  = risk_free_aligned.isnull().sum()
+    n_eia_nan = eia_aligned.isnull().any(axis=1).sum()
+
+
+    print(f"\n[ALIGN] Index commun : {len(trading_index)} jours de trading")
+    print(f"        Risk-free NaN résiduels : {n_rf_nan}")
+    print(f"        EIA jours incomplets    : {n_eia_nan}")
+
+    return prices, risk_free_aligned, eia_aligned
+    
 
 
 # ─────────────────────────────────────────────
@@ -137,8 +217,39 @@ def handle_missing_values(prices: pd.DataFrame) -> pd.DataFrame:
     """
 
     SEUIL_NAN_PCT = 20.0   # exclut les tickers avec plus de 20% de NaN
+    print(f"\n[MISSING] Analyse des valeurs manquantes (seuil exclusion : {SEUIL_NAN_PCT}%)")
 
-    pass
+    # ── Étape 1 : exclusion des tickers trop incomplets ──────────────────
+    pct_nan    = prices.isnull().mean() * 100
+    to_exclude = pct_nan[pct_nan > SEUIL_NAN_PCT].index.tolist()
+
+    if to_exclude:
+        print(f"[MISSING] Tickers exclus (> {SEUIL_NAN_PCT}% NaN) :")
+        for t in to_exclude:
+            print(f"          {t:<12} : {pct_nan[t]:.1f}% NaN")
+        prices = prices.drop(columns=to_exclude)
+    else:
+        print(f"[MISSING] Aucun ticker exclu")
+
+    # ── Étape 2 : forward fill sur les NaN isolés ────────────────────────
+    n_nan_before = prices.isnull().sum().sum()
+    prices_clean = prices.ffill(limit=5)
+    n_nan_after  = prices_clean.isnull().sum().sum()
+    n_combles    = n_nan_before - n_nan_after
+
+    print(f"[MISSING] NaN avant ffill : {n_nan_before}")
+    print(f"[MISSING] NaN comblés     : {n_combles}")
+    print(f"[MISSING] NaN résiduels   : {n_nan_after}")
+
+    # ── Rapport par ticker ────────────────────────────────────────────────
+    print(f"\n[MISSING] Rapport par ticker :")
+    for col in prices_clean.columns:
+        n = prices_clean[col].isnull().sum()
+        p = n / len(prices_clean) * 100
+        flag = " ⚠" if p > 2 else ""
+        print(f"          {col:<12} : {n:>4} NaN ({p:.1f}%){flag}")
+
+    return prices_clean
 
 
 # ─────────────────────────────────────────────
@@ -166,7 +277,38 @@ def compute_log_returns(prices: pd.DataFrame) -> pd.DataFrame:
         (un rendement > 50% en un jour est suspect sur des indices)
       - Retourne le DataFrame de rendements
     """
-    pass
+    log_returns = np.log(prices).diff().dropna()
+
+    # ── Contrôle des outliers ─────────────────────────────────────────────
+    # Un rendement journalier > 50% sur un indice/ETF est suspect
+    # (acceptable sur une petite cap ou une commodity en crise)
+    THRESHOLD = 0.50
+
+    for col in log_returns.columns:
+        extreme = log_returns[col].abs() > THRESHOLD
+        if extreme.any():
+            dates_extreme = log_returns.index[extreme].tolist()
+            print(f"[WARN] {col} — {extreme.sum()} rendement(s) > {THRESHOLD*100:.0f}% :")
+            for d in dates_extreme[:3]:   # affiche max 3
+                val = log_returns.loc[d, col]
+                print(f"       {d.date()} : {val*100:.1f}%")
+
+    # ── Contrôle NaN résiduels ────────────────────────────────────────────
+    n_nan = log_returns.isnull().sum().sum()
+    if n_nan > 0:
+        raise ValueError(
+            f"{n_nan} NaN résiduels dans les rendements — "
+            "vérifie handle_missing_values()"
+        )
+
+    print(f"\n[RETURNS] Log-rendements calculés — {len(log_returns)} jours")
+    print(f"[RETURNS] Résumé (rendements journaliers) :")
+    for col in log_returns.columns:
+        mu  = log_returns[col].mean() * 100
+        sig = log_returns[col].std() * 100
+        print(f"          {col:<12} : moy {mu:+.3f}%  vol {sig:.3f}%")
+
+    return log_returns
 
 
 def compute_excess_returns(
@@ -187,14 +329,31 @@ def compute_excess_returns(
       - Soustrait risk_free de chaque colonne de returns
       - Retourne le DataFrame des rendements en excès
     """
-    pass
+
+    # Aligne risk_free sur l'index des rendements
+    # (risk_free peut avoir des dates supplémentaires → reindex)
+    rf_aligned = risk_free.reindex(returns.index).ffill()
+
+    # Soustrait le taux sans risque de chaque colonne
+    # La soustraction broadcast automatiquement sur toutes les colonnes
+    excess = returns.subtract(rf_aligned, axis=0)
+    excess.columns = returns.columns   # conserve les noms de colonnes
+
+    print(f"\n[EXCESS] Rendements en excès calculés")
+    print(f"         Taux sans risque moy (journalier) : "
+          f"{rf_aligned.mean()*100:.4f}% "
+          f"({rf_aligned.mean()*TRADING_DAYS*100:.2f}% annualisé)")
+
 
 
 # ─────────────────────────────────────────────
 # 5. STATISTIQUES DESCRIPTIVES
 # ─────────────────────────────────────────────
 
-def compute_descriptive_stats(returns: pd.DataFrame) -> pd.DataFrame:
+def compute_descriptive_stats(
+        returns: pd.DataFrame,
+        risk_free: pd.Series = None,
+) -> pd.DataFrame:
     """
     Calcule les statistiques clés pour caractériser chaque actif.
 
@@ -230,9 +389,88 @@ def compute_descriptive_stats(returns: pd.DataFrame) -> pd.DataFrame:
         et les métriques en colonnes
     """
 
-    TRADING_DAYS = 252
+    rf_daily = risk_free.reindex(returns.index).ffill() if risk_free is not None \
+               else pd.Series(0.0, index=returns.index)
 
-    pass
+    records = []
+
+    for col in returns.columns:
+        r = returns[col].dropna()
+        rf = rf_daily.reindex(r.index).ffill()
+
+        # ── Rendement et volatilité annualisés ───────────────────────────
+        mean_ann = r.mean() * TRADING_DAYS
+        vol_ann  = r.std()  * np.sqrt(TRADING_DAYS)
+
+        # ── Sharpe ratio annualisé ────────────────────────────────────────
+        # On utilise les excès de rendement sur le risk-free
+        excess_r   = r - rf
+        sharpe     = (excess_r.mean() / r.std()) * np.sqrt(TRADING_DAYS) \
+                     if r.std() > 0 else np.nan
+
+        # ── Skewness & Kurtosis ───────────────────────────────────────────
+        # scipy_stats.skew / kurtosis → calcul exact (Fisher par défaut)
+        # kurtosis de Fisher : normale = 0 (pandas utilise excess kurtosis)
+        # kurtosis de Pearson : normale = 3 (convention finance)
+        skewness = scipy_stats.skew(r)
+        kurtosis = scipy_stats.kurtosis(r) + 3   # → convention Pearson
+
+        # ── Max Drawdown ──────────────────────────────────────────────────
+        # Logique :
+        #   1. Valeur cumulée du portefeuille (base 1 au départ)
+        #   2. Peak glissant = maximum atteint jusqu'à chaque date
+        #   3. Drawdown = (valeur actuelle / peak) - 1  (toujours ≤ 0)
+        #   4. Max drawdown = minimum du drawdown (pire perte depuis un pic)
+        cumulative = (1 + r).cumprod()
+        peak       = cumulative.cummax()
+        drawdown   = (cumulative / peak) - 1
+        max_dd     = drawdown.min()    # valeur négative → ex: -0.42 = -42%
+
+        # ── VaR historique ────────────────────────────────────────────────
+        # VaR 95% = percentile 5% des rendements (pertes dans 5% des cas)
+        # VaR 99% = percentile 1% des rendements (pertes dans 1% des cas)
+        # Signe conventionnel : VaR exprimée en positif (perte)
+        var_95 = -np.percentile(r, 5)    # ex: 0.023 = perte de 2.3%
+        var_99 = -np.percentile(r, 1)    # ex: 0.041 = perte de 4.1%
+
+        # ── Calmar Ratio ──────────────────────────────────────────────────
+        # Rendement annualisé / valeur absolue du max drawdown
+        # Ratio > 1 = le rendement compense largement le drawdown
+        calmar = mean_ann / abs(max_dd) if max_dd != 0 else np.nan
+
+        records.append({
+            "ticker"          : col,
+            "mean_return_ann" : round(mean_ann, 4),
+            "volatility_ann"  : round(vol_ann, 4),
+            "sharpe_ratio"    : round(sharpe, 3),
+            "skewness"        : round(skewness, 3),
+            "kurtosis"        : round(kurtosis, 3),
+            "max_drawdown"    : round(max_dd, 4),
+            "var_95_daily"    : round(var_95, 4),
+            "var_99_daily"    : round(var_99, 4),
+            "calmar_ratio"    : round(calmar, 3),
+            "n_obs"           : len(r),
+        })
+
+    stats = pd.DataFrame(records).set_index("ticker")
+
+    # ── Affichage formaté ─────────────────────────────────────────────────
+    print(f"\n[STATS] Statistiques descriptives — {len(returns.columns)} actifs\n")
+    print(f"{'Ticker':<12} {'Rend.Ann':>9} {'Vol.Ann':>8} {'Sharpe':>7} "
+          f"{'Skew':>7} {'Kurt':>7} {'MaxDD':>8} {'VaR95':>7}")
+    print("-" * 75)
+    for _, row in stats.iterrows():
+        print(f"{row.name:<12} "
+              f"{row['mean_return_ann']*100:>8.1f}% "
+              f"{row['volatility_ann']*100:>7.1f}% "
+              f"{row['sharpe_ratio']:>7.2f} "
+              f"{row['skewness']:>7.2f} "
+              f"{row['kurtosis']:>7.2f} "
+              f"{row['max_drawdown']*100:>7.1f}% "
+              f"{row['var_95_daily']*100:>6.2f}%")
+
+    return stats
+
 
 
 def compute_correlation_matrix(returns: pd.DataFrame) -> pd.DataFrame:
@@ -250,7 +488,26 @@ def compute_correlation_matrix(returns: pd.DataFrame) -> pd.DataFrame:
         → trop de corrélation = faible diversification
       - Retourne la matrice de corrélation
     """
-    pass
+    corr = returns.corr()
+
+    # ── Paires fortement corrélées ────────────────────────────────────────
+    SEUIL_CORR = 0.70
+    print(f"\n[CORR] Paires avec corrélation > {SEUIL_CORR} (risque de concentration) :")
+
+    found = False
+    tickers = corr.columns.tolist()
+    for i in range(len(tickers)):
+        for j in range(i + 1, len(tickers)):
+            c = corr.iloc[i, j]
+            if abs(c) > SEUIL_CORR:
+                sign = "+" if c > 0 else "-"
+                print(f"  {tickers[i]:<12} ↔ {tickers[j]:<12} : {c:+.2f}")
+                found = True
+
+    if not found:
+        print(f"  Aucune paire au-dessus du seuil — bonne diversification")
+
+    return corr
 
 
 # ─────────────────────────────────────────────
@@ -267,7 +524,13 @@ def save_processed(df: pd.DataFrame, filename: str) -> str:
       - Affiche le filepath et le nombre de lignes
       - Retourne le filepath
     """
-    pass
+    output_dir = PATHS["processed"]
+    os.makedirs(output_dir, exist_ok=True)
+    filepath   = os.path.join(output_dir, filename)
+    df.to_csv(filepath)
+    print(f"[SAVE] {filepath} — {len(df)} lignes × {len(df.columns)} colonnes")
+    return filepath
+
 
 
 # ─────────────────────────────────────────────
@@ -303,8 +566,49 @@ def run_preprocessing() -> dict:
     print("=" * 60)
     print("PREPROCESSING")
     print("=" * 60)
-    pass
 
+    # ── Chargement ────────────────────────────────────────────────────────
+    prices    = load_prices()
+    risk_free = load_risk_free()
+    eia       = load_eia()
+
+    # ── Alignement temporel ───────────────────────────────────────────────
+    prices, risk_free, eia = align_trading_calendar(prices, risk_free, eia)
+
+    # ── Nettoyage NaN ─────────────────────────────────────────────────────
+    prices = handle_missing_values(prices)
+
+    # ── Rendements ────────────────────────────────────────────────────────
+    returns        = compute_log_returns(prices)
+    excess_returns = compute_excess_returns(returns, risk_free)
+
+    # ── Statistiques ──────────────────────────────────────────────────────
+    stats       = compute_descriptive_stats(returns, risk_free)
+    correlation = compute_correlation_matrix(returns)
+
+    # ── Sauvegarde ────────────────────────────────────────────────────────
+    save_processed(returns,        f"returns_{START_DATE}_{END_DATE}.csv")
+    save_processed(excess_returns, f"excess_returns_{START_DATE}_{END_DATE}.csv")
+    save_processed(stats,          f"stats_{START_DATE}_{END_DATE}.csv")
+    save_processed(correlation,    f"correlation_{START_DATE}_{END_DATE}.csv")
+    save_processed(prices,         f"prices_clean_{START_DATE}_{END_DATE}.csv")
+
+    print("\n" + "=" * 60)
+    print("PREPROCESSING TERMINÉ")
+    print(f"  Actifs retenus  : {len(returns.columns)}")
+    print(f"  Jours trading   : {len(returns)}")
+    print(f"  Période         : {returns.index[0].date()} → {returns.index[-1].date()}")
+    print("=" * 60)
+
+    return {
+        "prices"         : prices,
+        "returns"        : returns,
+        "excess_returns" : excess_returns,
+        "risk_free"      : risk_free,
+        "eia"            : eia,
+        "stats"          : stats,
+        "correlation"    : correlation,
+    }
 
 # ─────────────────────────────────────────────
 # TEST STANDALONE
