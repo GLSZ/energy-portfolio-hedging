@@ -25,6 +25,7 @@ import sys
 import pandas as pd
 import numpy as np
 from pathlib import Path
+import scipy.stats as scipy_stats
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import (
@@ -329,7 +330,7 @@ def compute_excess_returns(
       - Soustrait risk_free de chaque colonne de returns
       - Retourne le DataFrame des rendements en excès
     """
-
+    TRADING_DAYS = 252
     # Aligne risk_free sur l'index des rendements
     # (risk_free peut avoir des dates supplémentaires → reindex)
     rf_aligned = risk_free.reindex(returns.index).ffill()
@@ -343,7 +344,8 @@ def compute_excess_returns(
     print(f"         Taux sans risque moy (journalier) : "
           f"{rf_aligned.mean()*100:.4f}% "
           f"({rf_aligned.mean()*TRADING_DAYS*100:.2f}% annualisé)")
-
+    
+    return excess
 
 
 # ─────────────────────────────────────────────
@@ -388,7 +390,7 @@ def compute_descriptive_stats(
       - Retourne un DataFrame avec les tickers en lignes
         et les métriques en colonnes
     """
-
+    TRADING_DAYS = 252
     rf_daily = risk_free.reindex(returns.index).ffill() if risk_free is not None \
                else pd.Series(0.0, index=returns.index)
 
