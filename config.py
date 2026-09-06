@@ -144,6 +144,8 @@ BACKTEST = {
     "rebalancing_frequency"  : "ME",     # rebalancing mensuel
     "transaction_costs_bps"  : 5,        # coûts de transaction en basis points (0.05%)
     "slippage_bps"           : 2,        # slippage estimé en basis points
+    "train_years":3, 
+    "test_years": 1
 }
 
 # ─────────────────────────────────────────────

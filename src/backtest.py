@@ -31,6 +31,7 @@ import pandas as pd
 import numpy as np
 from scipy import stats as scipy_stats
 from pathlib import Path
+from dateutil.relativedelta import relativedelta
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import (
@@ -870,7 +871,12 @@ def analyze_drawdowns(
 
     for i, row in df.iterrows():
         recov_str = str(row["recovery"]) if row["recovery"] else "En cours"
-        recov_d   = str(int(row["days_to_recovery"])) if row["days_to_recovery"] else "  -"
+        #recov_d   = str(int(row["days_to_recovery"])) if row["days_to_recovery"] else "  -"
+        recov_d = (
+            str(int(row["days_to_recovery"]))
+            if pd.notna(row["days_to_recovery"])
+            else "  -"
+        )
         print(f"  {i+1:<3} {str(row['start']):<12} {str(row['trough']):<12} "
               f"{recov_str:<12} {row['depth']*100:>11.2f}% "
               f"{int(row['days_to_trough']):>9} {recov_d:>10}")
