@@ -251,48 +251,22 @@ def compute_rolling_correlation(
       - Utilise pd.Series.rolling(window).corr()
       - Retourne une pd.Series
     """
-    rebalancing_freq = rebalancing_freq or HEDGING["rebalancing_frequency"]
-    max_ratio        = HEDGING["max_hedge_ratio"]   # 2.0
+    window = window or HEDGING["rolling_window_days"]
 
-    # Position courte → hedge ratio négatif
-    hedge_ratio_raw = -rolling_beta
+    aligned  = pd.concat([portfolio_returns, hedge_returns], axis=1).dropna()
+    r_p      = aligned.iloc[:, 0]
+    r_h      = aligned.iloc[:, 1]
 
-    # Clippe entre [-max_ratio, 0]
-    # On est long portefeuille → hedge toujours short (ratio ≤ 0)
-    hedge_ratio_clipped = hedge_ratio_raw.clip(lower=-max_ratio, upper=0)
+    rolling_corr      = r_p.rolling(window).corr(r_h)
+    rolling_corr.name = "rolling_correlation"
 
-    # ── Rebalancing : extraction des valeurs aux dates de fin de mois ─────
-    # resample("ME").last() → prend la dernière valeur de chaque mois
-    # Ces valeurs sont les hedge ratios applicables le mois suivant
-    rebalancing_values = hedge_ratio_clipped.resample(rebalancing_freq).last()
+    corr_valid = rolling_corr.dropna()
+    print(f"\n[CORR] Corrélation glissante portefeuille / {hedge_returns.name}")
+    print(f"       Corrélation moyenne : {corr_valid.mean():.3f}")
+    print(f"       Corrélation min     : {corr_valid.min():.3f}")
+    print(f"       Corrélation max     : {corr_valid.max():.3f}")
 
-    # Réindexe sur l'index original et forward fill
-    # → entre deux rebalancings, le ratio est maintenu constant
-    hedge_ratio = (
-        rebalancing_values
-        .reindex(rolling_beta.index)
-        .ffill()
-    )
-    hedge_ratio.name = "hedge_ratio"
-
-    # Statistiques
-    hr_valid      = hedge_ratio.dropna()
-    n_rebalancing = rebalancing_values.dropna().shape[0]
-
-    print(f"\n[HEDGE RATIO] Fréquence : {rebalancing_freq}")
-    print(f"              Nombre de rebalancings : {n_rebalancing}")
-    print(f"              Ratio moyen  : {hr_valid.mean():.3f}")
-    print(f"              Ratio min    : {hr_valid.min():.3f}")
-    print(f"              Ratio max    : {hr_valid.max():.3f}")
-
-    # Détecte les périodes où la contrainte max a été atteinte
-    n_clipped = (hedge_ratio_raw < -max_ratio).sum()
-    if n_clipped > 0:
-        print(f"[WARN] {n_clipped} jours où beta > {max_ratio} "
-              f"→ hedge ratio clippé à -{max_ratio}")
-
-    return hedge_ratio
-
+    return rolling_corr
 
 
 # ─────────────────────────────────────────────
